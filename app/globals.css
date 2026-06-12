@@ -1,79 +1,149 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ── Base ─────────────────────────────────────────────── */
+:root {
+  --pulse-peer: #60a5fa;
+  --pulse-me: #34d399;
+  --pulse-peer-glow: rgba(96, 165, 250, 0.5);
+  --pulse-me-glow: rgba(52, 211, 153, 0.5);
+  --glass-bg: rgba(255, 255, 255, 0.04);
+  --glass-border: rgba(255, 255, 255, 0.08);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: #080c14;
+  color: #e2e8f0;
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Live user dots on the map */
+/* ── Peer dots ────────────────────────────────────────── */
 .pulse-dot {
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   border-radius: 9999px;
-  border: 2px solid rgba(255, 255, 255, 0.9);
+  background: var(--pulse-peer);
+  border: none;
   cursor: pointer;
   padding: 0;
-  box-shadow: 0 0 0 rgba(255, 255, 255, 0.5);
-  animation: pulse-ring 2s ease-out infinite;
-  transition: transform 0.1s ease;
+  position: relative;
+  box-shadow:
+    0 0 6px 1px var(--pulse-peer-glow),
+    0 0 12px 2px rgba(96, 165, 250, 0.2);
+  animation: peer-pulse 2.4s ease-out infinite;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .pulse-dot:hover {
-  transform: scale(1.3);
+  transform: scale(1.5);
+  box-shadow:
+    0 0 10px 2px var(--pulse-peer-glow),
+    0 0 20px 4px rgba(96, 165, 250, 0.3);
 }
 
-/* The user's own "you are here" pin — small, sized like the dots. */
+@keyframes peer-pulse {
+  0% {
+    box-shadow:
+      0 0 0 0 var(--pulse-peer-glow),
+      0 0 6px 1px var(--pulse-peer-glow);
+  }
+  60% {
+    box-shadow:
+      0 0 0 8px rgba(96, 165, 250, 0),
+      0 0 6px 1px var(--pulse-peer-glow);
+  }
+  100% {
+    box-shadow:
+      0 0 0 0 rgba(96, 165, 250, 0),
+      0 0 6px 1px var(--pulse-peer-glow);
+  }
+}
+
+/* ── Your own dot ─────────────────────────────────────── */
 .pulse-me {
   position: relative;
-  font-size: 18px;
-  line-height: 1;
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background: var(--pulse-me);
   cursor: default;
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+  box-shadow:
+    0 0 6px 1px var(--pulse-me-glow),
+    0 0 14px 3px rgba(52, 211, 153, 0.2);
+  animation: me-pulse 3s ease-out infinite;
+}
+
+@keyframes me-pulse {
+  0% {
+    box-shadow:
+      0 0 0 0 var(--pulse-me-glow),
+      0 0 6px 1px var(--pulse-me-glow);
+  }
+  60% {
+    box-shadow:
+      0 0 0 10px rgba(52, 211, 153, 0),
+      0 0 6px 1px var(--pulse-me-glow);
+  }
+  100% {
+    box-shadow:
+      0 0 0 0 rgba(52, 211, 153, 0),
+      0 0 6px 1px var(--pulse-me-glow);
+  }
 }
 
 .pulse-me-label {
   position: absolute;
-  bottom: 100%;
+  bottom: calc(100% + 5px);
   left: 50%;
   transform: translateX(-50%);
-  margin-bottom: 1px;
-  font-size: 10px;
-  font-weight: 700;
-  color: #ffffff;
-  background: rgba(0, 0, 0, 0.6);
-  padding: 0 5px;
-  border-radius: 9999px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pulse-me);
   white-space: nowrap;
+  opacity: 0.85;
 }
 
-@keyframes pulse-ring {
-  0% {
-    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.4);
-  }
-  70% {
-    box-shadow: 0 0 0 8px rgba(255, 255, 255, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
-  }
+/* ── Frosted glass utility ────────────────────────────── */
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--glass-border);
+}
+
+/* ── Atmospheric entry gate background ───────────────── */
+.gate-bg {
+  background:
+    radial-gradient(
+      ellipse 80% 60% at 50% 100%,
+      rgba(96, 165, 250, 0.08) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 60% 40% at 20% 50%,
+      rgba(139, 92, 246, 0.06) 0%,
+      transparent 60%
+    ),
+    #080c14;
+}
+
+/* ── Scrollbar (chat panel) ───────────────────────────── */
+.chat-scroll::-webkit-scrollbar {
+  width: 3px;
+}
+.chat-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 9999px;
 }

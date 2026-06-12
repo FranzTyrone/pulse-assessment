@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import EntryGate from "./components/EntryGate";
 import WorldMap from "./components/WorldMap";
 import ConnectionPrompt from "./components/ConnectionPrompt";
@@ -9,7 +11,7 @@ import VideoPanel from "./components/VideoPanel";
 import { join, leave, poll, sendSignal } from "@/lib/api";
 import { PeerSession, type DescType, type PeerControl } from "@/lib/webrtc";
 import { POLL_INTERVAL_MS } from "@/lib/presence";
-import { type PeerDot, type SignalMsg } from "@/lib/types";
+import { type PeerDot, type SignalMsg, type DrawMessage } from "@/lib/types";
 
 type Conn =
   | { kind: "idle" }
@@ -19,20 +21,20 @@ type Conn =
   | { kind: "connected"; peerId: string };
 
 type VideoState = "none" | "requesting" | "incoming" | "active";
-
 const REQUEST_TIMEOUT_MS = 30_000;
 
 export default function Home() {
   const [phase, setPhase] = useState<"gate" | "live">("gate");
-  const [sessionId] = useState(() => crypto.randomUUID());
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [peers, setPeers] = useState<PeerDot[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
-  const [myLocation, setMyLocation] = useState<{ lat: number; lng: number } | null>(
-    null,
-  );
+  const [myLocation, setMyLocation] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
 
   const [conn, _setConn] = useState<Conn>({ kind: "idle" });
   const connRef = useRef<Conn>(conn);
@@ -51,6 +53,21 @@ export default function Home() {
   const peerRef = useRef<PeerSession | null>(null);
   const msgId = useRef(0);
   const requestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Draw refs — used to push remote strokes into the canvas without re-rendering
+  const remoteDrawRef = useRef<((msg: DrawMessage) => void) | null>(null);
+  const remoteClearRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("pulse-session-id");
+    if (saved) {
+      setSessionId(saved);
+    } else {
+      const newId = crypto.randomUUID();
+      localStorage.setItem("pulse-session-id", newId);
+      setSessionId(newId);
+    }
+  }, []);
 
   function showNotice(text: string) {
     setNotice(text);
@@ -74,21 +91,20 @@ export default function Home() {
   }
 
   function startPeer(peerId: string, initiator: boolean) {
+    if (!sessionId) return;
     const ps = new PeerSession(initiator, {
       onSignal: (type: DescType, payload: string) => {
         void sendSignal(sessionId, peerId, type, payload);
       },
       onChat: (text) => addMessage(false, text),
       onControl: (ctrl) => handleControl(ctrl),
+      onDraw: (msg) => remoteDrawRef.current?.(msg),
+      onClear: () => remoteClearRef.current?.(),
       onRemoteStream: (stream) => setRemoteStream(stream),
       onConnectionState: (state) => {
-        if (state === "failed") {
-          teardown("Connection failed (network).");
-        }
+        if (state === "failed") teardown("Connection failed.");
       },
-      onChannelOpen: () => {
-        setConn({ kind: "connected", peerId });
-      },
+      onChannelOpen: () => setConn({ kind: "connected", peerId }),
     });
     peerRef.current = ps;
   }
@@ -102,8 +118,8 @@ export default function Home() {
       case "video-accept":
         if (videoRef.current === "requesting" && ps) {
           ps.startVideo()
-            .then((stream) => {
-              setLocalStream(stream);
+            .then((s) => {
+              setLocalStream(s);
               setVideo("active");
             })
             .catch(() => {
@@ -129,7 +145,7 @@ export default function Home() {
   }
 
   function requestConnection(peerId: string) {
-    if (connRef.current.kind !== "idle") return;
+    if (!sessionId || connRef.current.kind !== "idle") return;
     setConn({ kind: "requesting", peerId });
     void sendSignal(sessionId, peerId, "request");
     requestTimer.current = setTimeout(() => {
@@ -144,14 +160,14 @@ export default function Home() {
   }
 
   function cancelRequest() {
-    if (connRef.current.kind === "requesting") {
+    if (connRef.current.kind === "requesting" && sessionId) {
       void sendSignal(sessionId, connRef.current.peerId, "end");
     }
     teardown();
   }
 
   function acceptIncoming() {
-    if (connRef.current.kind !== "incoming") return;
+    if (connRef.current.kind !== "incoming" || !sessionId) return;
     const peerId = connRef.current.peerId;
     startPeer(peerId, false);
     void sendSignal(sessionId, peerId, "accept");
@@ -159,16 +175,15 @@ export default function Home() {
   }
 
   function declineIncoming() {
-    if (connRef.current.kind !== "incoming") return;
+    if (connRef.current.kind !== "incoming" || !sessionId) return;
     void sendSignal(sessionId, connRef.current.peerId, "decline");
     setConn({ kind: "idle" });
   }
 
   function endConnection() {
     const c = connRef.current;
-    if (c.kind === "connecting" || c.kind === "connected") {
+    if ((c.kind === "connecting" || c.kind === "connected") && sessionId)
       void sendSignal(sessionId, c.peerId, "end");
-    }
     teardown();
   }
 
@@ -179,16 +194,15 @@ export default function Home() {
   }
 
   function acceptVideo() {
-    const ps = peerRef.current;
-    if (!ps) return;
-    ps.startVideo()
-      .then((stream) => {
-        setLocalStream(stream);
-        ps.sendControl("video-accept");
+    peerRef.current
+      ?.startVideo()
+      .then((s) => {
+        setLocalStream(s);
+        peerRef.current?.sendControl("video-accept");
         setVideo("active");
       })
       .catch(() => {
-        ps.sendControl("video-decline");
+        peerRef.current?.sendControl("video-decline");
         setVideo("none");
         showNotice("Camera unavailable.");
       });
@@ -200,68 +214,60 @@ export default function Home() {
   }
 
   function endVideo() {
-    const ps = peerRef.current;
-    ps?.stopVideo();
-    ps?.sendControl("video-end");
+    peerRef.current?.stopVideo();
+    peerRef.current?.sendControl("video-end");
     setLocalStream(null);
     setRemoteStream(null);
     setVideo("none");
   }
 
-  function processSignal(sig: SignalMsg) {
+  async function processSignal(sig: SignalMsg) {
+    if (!sessionId) return;
+    const ps = peerRef.current;
     switch (sig.type) {
-      case "request": {
-        if (connRef.current.kind === "idle") {
+      case "request":
+        if (connRef.current.kind === "idle")
           setConn({ kind: "incoming", peerId: sig.fromId });
-        } else {
-          void sendSignal(sessionId, sig.fromId, "decline");
-        }
+        else void sendSignal(sessionId, sig.fromId, "decline");
         break;
-      }
-      case "accept": {
-        const c = connRef.current;
-        if (c.kind === "requesting" && c.peerId === sig.fromId) {
+      case "accept":
+        if (
+          connRef.current.kind === "requesting" &&
+          connRef.current.peerId === sig.fromId
+        ) {
           if (requestTimer.current) clearTimeout(requestTimer.current);
           startPeer(sig.fromId, true);
           setConn({ kind: "connecting", peerId: sig.fromId });
         }
         break;
-      }
-      case "decline": {
-        const c = connRef.current;
-        if (c.kind === "requesting" && c.peerId === sig.fromId) {
+      case "decline":
+        if (
+          connRef.current.kind === "requesting" &&
+          connRef.current.peerId === sig.fromId
+        ) {
           if (requestTimer.current) clearTimeout(requestTimer.current);
           teardown("Request declined.");
         }
         break;
-      }
       case "offer":
       case "answer":
-      case "ice": {
-        const c = connRef.current;
-        const peerId =
-          c.kind === "connecting" || c.kind === "connected" ? c.peerId : null;
-        if (peerRef.current && peerId === sig.fromId) {
-          void peerRef.current.handleSignal(
-            sig.type as DescType,
-            sig.payload ?? "",
-          );
-        }
+        if (ps && sig.payload)
+          await ps.handleSignal(sig.type as DescType, sig.payload);
         break;
-      }
-      case "end": {
-        const c = connRef.current;
+      case "ice":
+        if (ps && sig.payload) await ps.handleSignal("ice", sig.payload);
+        break;
+      case "end":
         if (
-          (c.kind === "incoming" ||
-            c.kind === "connecting" ||
-            c.kind === "connected") &&
-          c.peerId === sig.fromId
+          (connRef.current.kind === "incoming" ||
+            connRef.current.kind === "connecting" ||
+            connRef.current.kind === "connected") &&
+          connRef.current.peerId === sig.fromId
         ) {
-          if (c.kind === "incoming") setConn({ kind: "idle" });
+          if (connRef.current.kind === "incoming") setConn({ kind: "idle" });
           else teardown("Stranger disconnected.");
         }
         break;
-      }
     }
   }
 
@@ -272,23 +278,20 @@ export default function Home() {
 
   useEffect(() => {
     if (phase !== "live" || !sessionId) return;
+    const sid = sessionId;
     let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
     const tick = async () => {
       try {
-        const data = await poll(sessionId);
+        const data = await poll(sid);
         if (!active) return;
         setPeers(data.peers);
         for (const s of data.signals) processSignalRef.current(s);
       } catch {}
-      if (active) timer = setTimeout(tick, POLL_INTERVAL_MS);
+      if (active) setTimeout(tick, POLL_INTERVAL_MS);
     };
     tick();
-
     return () => {
       active = false;
-      if (timer) clearTimeout(timer);
     };
   }, [phase, sessionId]);
 
@@ -304,14 +307,13 @@ export default function Home() {
   }, [sessionId, phase]);
 
   async function handleReady(lat: number, lng: number) {
+    if (!sessionId) return;
     setMyLocation({ lat, lng });
-    await join(sessionId, lat, lng);
+    await join(sessionId, lat, lng).catch(console.error);
     setPhase("live");
   }
 
-  if (phase === "gate") {
-    return <EntryGate onReady={handleReady} />;
-  }
+  if (phase === "gate") return <EntryGate onReady={handleReady} />;
 
   const inChat = conn.kind === "connecting" || conn.kind === "connected";
 
@@ -324,72 +326,115 @@ export default function Home() {
         canConnect={conn.kind === "idle"}
       />
 
-      {notice && (
-        <div className="absolute left-1/2 top-20 z-30 -translate-x-1/2 rounded-full bg-zinc-800/90 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur">
-          {notice}
-        </div>
-      )}
-
-      {conn.kind === "requesting" && (
-        <div className="absolute left-1/2 top-20 z-30 flex -translate-x-1/2 items-center gap-3 rounded-full bg-zinc-800/90 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur">
-          <span>Requesting connection…</span>
-          <button
-            onClick={cancelRequest}
-            className="rounded-full bg-zinc-700 px-3 py-1 text-xs hover:bg-zinc-600"
+      {/* Toast notices */}
+      <AnimatePresence>
+        {notice && (
+          <motion.div
+            className="absolute left-1/2 top-6 z-30 -translate-x-1/2 rounded-full bg-zinc-800/90 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur"
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            transition={{ type: "spring", stiffness: 400, damping: 30 }}
           >
-            Cancel
-          </button>
-        </div>
-      )}
+            {notice}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {conn.kind === "incoming" && (
-        <ConnectionPrompt
-          title="A stranger wants to connect"
-          acceptLabel="Accept"
-          declineLabel="Decline"
-          onAccept={acceptIncoming}
-          onDecline={declineIncoming}
-        />
-      )}
+      {/* Requesting banner */}
+      <AnimatePresence>
+        {conn.kind === "requesting" && (
+          <motion.div
+            className="absolute left-1/2 top-6 z-30 flex -translate-x-1/2 items-center gap-3 rounded-full bg-zinc-800/90 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur"
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            transition={{ type: "spring", stiffness: 400, damping: 30 }}
+          >
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400" />
+            <span>Requesting connection…</span>
+            <button
+              onClick={cancelRequest}
+              className="rounded-full bg-zinc-700 px-3 py-1 text-xs hover:bg-zinc-600"
+            >
+              Cancel
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {inChat && (
-        <ChatPanel
-          messages={messages}
-          connected={conn.kind === "connected"}
-          videoBusy={video !== "none"}
-          onSend={(text) => {
-            peerRef.current?.sendChat(text);
-            addMessage(true, text);
-          }}
-          onStartVideo={startVideoRequest}
-          onEnd={endConnection}
-        />
-      )}
+      {/* Incoming connection prompt */}
+      <AnimatePresence>
+        {conn.kind === "incoming" && (
+          <ConnectionPrompt
+            title="A stranger wants to connect"
+            acceptLabel="Accept"
+            declineLabel="Decline"
+            onAccept={acceptIncoming}
+            onDecline={declineIncoming}
+          />
+        )}
+      </AnimatePresence>
 
-      {video === "requesting" && (
-        <div className="absolute bottom-24 left-1/2 z-30 -translate-x-1/2 rounded-full bg-zinc-800/90 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur">
-          Waiting for stranger to accept video…
-        </div>
-      )}
+      {/* Chat panel */}
+      <AnimatePresence>
+        {inChat && (
+          <ChatPanel
+            messages={messages}
+            connected={conn.kind === "connected"}
+            videoBusy={video !== "none"}
+            onSend={(t) => {
+              peerRef.current?.sendChat(t);
+              addMessage(true, t);
+            }}
+            onStartVideo={startVideoRequest}
+            onEnd={endConnection}
+            onDraw={(msg) => peerRef.current?.sendDraw(msg)}
+            onClear={() => peerRef.current?.sendClear()}
+            remoteDrawRef={remoteDrawRef}
+            remoteClearRef={remoteClearRef}
+          />
+        )}
+      </AnimatePresence>
 
-      {video === "incoming" && (
-        <ConnectionPrompt
-          title="Start video call?"
-          subtitle="The stranger wants to turn on video."
-          acceptLabel="Accept"
-          declineLabel="Decline"
-          onAccept={acceptVideo}
-          onDecline={declineVideo}
-        />
-      )}
+      {/* Video requesting banner */}
+      <AnimatePresence>
+        {video === "requesting" && (
+          <motion.div
+            className="absolute bottom-24 left-1/2 z-30 -translate-x-1/2 rounded-full bg-zinc-800/90 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+          >
+            Waiting for stranger…
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {video === "active" && (
-        <VideoPanel
-          localStream={localStream}
-          remoteStream={remoteStream}
-          onEnd={endVideo}
-        />
-      )}
+      {/* Incoming video prompt */}
+      <AnimatePresence>
+        {video === "incoming" && (
+          <ConnectionPrompt
+            title="Start video call?"
+            subtitle="The stranger wants to turn on video."
+            acceptLabel="Accept"
+            declineLabel="Decline"
+            onAccept={acceptVideo}
+            onDecline={declineVideo}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Video panel */}
+      <AnimatePresence>
+        {video === "active" && (
+          <VideoPanel
+            localStream={localStream}
+            remoteStream={remoteStream}
+            onEnd={endVideo}
+          />
+        )}
+      </AnimatePresence>
     </main>
   );
 }
