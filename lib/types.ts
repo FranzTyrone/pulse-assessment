@@ -30,3 +30,19 @@ export interface PollResponse {
   peers: PeerDot[];
   signals: SignalMsg[];
 }
+
+// Draw message sent over the WebRTC data channel.
+export interface DrawMessage {
+  t: "draw";
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  color: string;
+  width: number;
+}
+
+// Clear canvas message.
+export interface ClearMessage {
+  t: "clear";
+}

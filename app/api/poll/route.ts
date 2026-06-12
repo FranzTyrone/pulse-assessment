@@ -1,20 +1,34 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { STALE_MS, SIGNAL_TTL_MS } from "@/lib/presence";
+import { verifyToken } from "@/lib/auth";
+import { pollLimiter, getIp } from "@/lib/ratelimit";
 import type { PollResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // GET /api/poll?id= — the single endpoint that drives the live map.
-// It (1) heartbeats the caller, (2) reaps stale presence + orphan signals,
-// (3) returns the filtered online peers, and (4) drains this user's mailbox.
+// Token is read from the Authorization: Bearer header, not the query string,
+// so it stays out of server access logs.
 export async function GET(request: NextRequest) {
+  const { success } = await pollLimiter.limit(getIp(request));
+  if (!success) {
+    return Response.json({ error: "too many requests" }, { status: 429 });
+  }
+
   const params = request.nextUrl.searchParams;
   const id = params.get("id");
+  const token =
+    request.headers.get("authorization")?.replace("Bearer ", "") ?? null;
 
-  if (!id) {
-    return Response.json({ error: "missing id" }, { status: 400 });
+  if (!id || !token) {
+    return Response.json({ error: "missing id or token" }, { status: 400 });
+  }
+
+  const valid = await verifyToken(id, token);
+  if (!valid) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
   }
 
   const now = Date.now();
@@ -23,14 +37,18 @@ export async function GET(request: NextRequest) {
 
   // 1) Heartbeat — refresh lastSeen for the caller.
   await prisma.presence.updateMany({
-    where: {},
+    where: { id },
     data: { lastSeen: new Date(now) },
   });
 
   // 2) Reap stale presence rows and orphaned signals (independent deletes —
   // no atomicity needed, and avoids transactions over a PgBouncer pooler).
-  await prisma.presence.deleteMany({ where: { lastSeen: { lt: staleCutoff } } });
-  await prisma.signal.deleteMany({ where: { createdAt: { lt: signalCutoff } } });
+  await prisma.presence.deleteMany({
+    where: { lastSeen: { lt: staleCutoff } },
+  });
+  await prisma.signal.deleteMany({
+    where: { createdAt: { lt: signalCutoff } },
+  });
 
   // 3) Online peers, excluding self.
   const peers = await prisma.presence.findMany({
@@ -47,6 +65,20 @@ export async function GET(request: NextRequest) {
     where: { toId: id },
     orderBy: { createdAt: "asc" },
   });
+
+  if (process.env.NODE_ENV !== "production") {
+    if (inbox.length === 0) {
+      const totalSignals = await prisma.signal.count();
+      console.log(
+        `[POLL DEBUG] Found 0 signals for ID: ${id}. Total signals in DB: ${totalSignals}`,
+      );
+    } else {
+      console.log(
+        `[POLL DEBUG] Successfully found ${inbox.length} signals for ID: ${id}`,
+      );
+    }
+  }
+
   if (inbox.length > 0) {
     await prisma.signal.deleteMany({
       where: { id: { in: inbox.map((s) => s.id) } },

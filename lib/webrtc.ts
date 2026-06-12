@@ -1,3 +1,5 @@
+import type { DrawMessage, ClearMessage } from "@/lib/types";
+
 export type DescType = "offer" | "answer" | "ice";
 export type PeerControl =
   | "video-request"
@@ -9,6 +11,8 @@ interface PeerCallbacks {
   onSignal: (type: DescType, payload: string) => void;
   onChat: (text: string) => void;
   onControl: (ctrl: PeerControl) => void;
+  onDraw: (msg: DrawMessage) => void;
+  onClear: () => void;
   onRemoteStream: (stream: MediaStream | null) => void;
   onConnectionState: (state: RTCPeerConnectionState) => void;
   onChannelOpen: () => void;
@@ -19,7 +23,7 @@ const ICE_CONFIG: RTCConfiguration = {
 };
 
 export class PeerSession {
-  private pc: RTCPeerConnection;
+  public pc: RTCPeerConnection;
   private dc: RTCDataChannel | null = null;
   private readonly polite: boolean;
   private makingOffer = false;
@@ -32,15 +36,25 @@ export class PeerSession {
   constructor(initiator: boolean, cb: PeerCallbacks) {
     this.cb = cb;
     this.polite = !initiator;
-    this.pc = new RTCPeerConnection(ICE_CONFIG);
+    this.pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+      ],
+    });
 
     this.pc.onicecandidate = ({ candidate }) => {
       if (candidate) {
+        console.log("DEBUG: ICE candidate found, sending...");
         this.cb.onSignal("ice", JSON.stringify(candidate));
+      } else {
+        console.log("DEBUG: ICE gathering complete.");
       }
     };
 
     this.pc.onnegotiationneeded = async () => {
+      // Only the initiator drives the initial offer
+      if (!initiator) return;
       try {
         this.makingOffer = true;
         await this.pc.setLocalDescription();
@@ -80,6 +94,10 @@ export class PeerSession {
           this.cb.onChat(msg.text);
         } else if (msg.t === "ctrl" && typeof msg.ctrl === "string") {
           this.cb.onControl(msg.ctrl as PeerControl);
+        } else if (msg.t === "draw") {
+          this.cb.onDraw(msg as DrawMessage);
+        } else if (msg.t === "clear") {
+          this.cb.onClear();
         }
       } catch {}
     };
@@ -90,25 +108,41 @@ export class PeerSession {
     const data = JSON.parse(payload);
 
     if (type === "ice") {
-      if (!this.pc.remoteDescription) {
+      if (!this.pc.remoteDescription?.type) {
         this.pendingCandidates.push(data);
         return;
       }
       try {
         await this.pc.addIceCandidate(data);
-      } catch {}
+      } catch (e) {
+        console.warn("Failed to add ICE candidate:", e);
+      }
       return;
     }
 
     const desc = data as RTCSessionDescriptionInit;
-    const offerCollision =
-      desc.type === "offer" &&
-      (this.makingOffer || this.pc.signalingState !== "stable");
-    this.ignoreOffer = !this.polite && offerCollision;
-    if (this.ignoreOffer) return;
 
-    await this.flushPendingCandidates();
+    if (desc.type === "offer" && this.pc.signalingState !== "stable") {
+      console.warn(
+        "Ignoring offer — not in stable state:",
+        this.pc.signalingState,
+      );
+      return;
+    }
+    if (
+      desc.type === "answer" &&
+      this.pc.signalingState !== "have-local-offer"
+    ) {
+      console.warn(
+        "Ignoring answer — not in have-local-offer state:",
+        this.pc.signalingState,
+      );
+      return;
+    }
+
     await this.pc.setRemoteDescription(desc);
+    await this.flushPendingCandidates();
+
     if (desc.type === "offer") {
       await this.pc.setLocalDescription();
       if (this.pc.localDescription) {
@@ -129,11 +163,19 @@ export class PeerSession {
   }
 
   sendChat(text: string) {
-    this.safeSend({ t: "msg", text });
+    this.safeSend({ t: "chat", text });
   }
 
   sendControl(ctrl: PeerControl) {
     this.safeSend({ t: "ctrl", ctrl });
+  }
+
+  sendDraw(msg: DrawMessage) {
+    this.safeSend(msg);
+  }
+
+  sendClear() {
+    this.safeSend({ t: "clear" } satisfies ClearMessage);
   }
 
   private safeSend(obj: unknown) {
