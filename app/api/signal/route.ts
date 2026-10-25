@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyToken } from "@/lib/auth";
-import { signalLimiter, getIp } from "@/lib/ratelimit";
+import { signalLimiter, allowRequest } from "@/lib/ratelimit";
 import type { SignalType } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -23,8 +23,7 @@ const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function POST(request: NextRequest) {
-  const { success } = await signalLimiter.limit(getIp(request));
-  if (!success) {
+  if (!(await allowRequest(signalLimiter, request))) {
     return Response.json({ error: "too many requests" }, { status: 429 });
   }
 

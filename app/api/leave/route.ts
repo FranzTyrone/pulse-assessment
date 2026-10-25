@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyToken } from "@/lib/auth";
-import { leaveLimiter, getIp } from "@/lib/ratelimit";
+import { leaveLimiter, allowRequest } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,8 +10,7 @@ export const dynamic = "force-dynamic";
 // pending signals to/from this user. Called via navigator.sendBeacon on tab
 // close, so the body may arrive as text — parse defensively.
 export async function POST(request: NextRequest) {
-  const { success } = await leaveLimiter.limit(getIp(request));
-  if (!success) {
+  if (!(await allowRequest(leaveLimiter, request))) {
     return Response.json({ error: "too many requests" }, { status: 429 });
   }
 

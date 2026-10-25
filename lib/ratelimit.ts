@@ -34,6 +34,29 @@ export const leaveLimiter = new Ratelimit({
   prefix: "rl:leave",
 });
 
+let warnedUnavailable = false;
+
+/**
+ * Returns true if the request may proceed. Fails open when Redis is
+ * unreachable (e.g. the Upstash database was deleted or env vars are wrong)
+ * so a rate-limiter outage never takes the whole app down.
+ */
+export async function allowRequest(
+  limiter: Ratelimit,
+  request: Request,
+): Promise<boolean> {
+  try {
+    const { success } = await limiter.limit(getIp(request));
+    return success;
+  } catch (err) {
+    if (!warnedUnavailable) {
+      warnedUnavailable = true;
+      console.error("[ratelimit] Redis unavailable, failing open:", err);
+    }
+    return true;
+  }
+}
+
 /** Extract the real client IP from Next.js request headers. */
 export function getIp(request: Request): string {
   return (

@@ -2,7 +2,7 @@ import { randomBytes } from "crypto";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { applyPrivacyOffset, isValidLatLng } from "@/lib/geo";
-import { joinLimiter, getIp } from "@/lib/ratelimit";
+import { joinLimiter, allowRequest } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,8 +15,7 @@ const UUID_V4 =
 // coordinates are never stored. Returns a secret token the client must
 // include on all subsequent requests.
 export async function POST(request: NextRequest) {
-  const { success } = await joinLimiter.limit(getIp(request));
-  if (!success) {
+  if (!(await allowRequest(joinLimiter, request))) {
     return Response.json({ error: "too many requests" }, { status: 429 });
   }
 

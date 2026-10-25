@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { STALE_MS, SIGNAL_TTL_MS } from "@/lib/presence";
 import { verifyToken } from "@/lib/auth";
-import { pollLimiter, getIp } from "@/lib/ratelimit";
+import { pollLimiter, allowRequest } from "@/lib/ratelimit";
 import type { PollResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -12,8 +12,7 @@ export const dynamic = "force-dynamic";
 // Token is read from the Authorization: Bearer header, not the query string,
 // so it stays out of server access logs.
 export async function GET(request: NextRequest) {
-  const { success } = await pollLimiter.limit(getIp(request));
-  if (!success) {
+  if (!(await allowRequest(pollLimiter, request))) {
     return Response.json({ error: "too many requests" }, { status: 429 });
   }
 
